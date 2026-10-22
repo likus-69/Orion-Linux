@@ -1,1 +1,17 @@
-https://www.kernel.org/pub/linux/kernel/v6.x/linux-6.12.4.tar.xz
+# packages/linux/sources
+#
+# Source: the user's fork of torvalds/linux at github.com/likus-69/Orion-linux-v1.1
+#
+# orion-pkg's `orion_fetch` understands two URL forms for git sources:
+#
+#   git+https://...#tag=<tag>     → shallow clone with --branch <tag>
+#   git+https://...#commit=<sha>  → shallow clone at specific commit
+#
+# Tags live in the fork — make sure you've run "Sync fork" on
+# https://github.com/likus-69/Orion-linux-v1.1 so the upstream tags
+# (v7.3, v6.18.x, etc.) are available.
+#
+# To pin a different tag, edit this file and bump packages/linux/version
+# to match.
+
+git+https://github.com/likus-69/Orion-linux-v1.1.git#tag=v7.3

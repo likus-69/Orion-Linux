@@ -194,6 +194,46 @@ build_one() {
     local url="${sources[$i]}"
     local sum="${checksums[$i]:-}"
     local dest="$ORION_DOWNLOAD/$(basename "$url")"
+
+    # --- git sources (git+https://...#tag=... or git+https://...#commit=...) ---
+    if [[ "$url" == git+https://* ]]; then
+      local repo_url="${url#git+}"
+      local ref=""
+      local ref_type=""
+      if [[ "$repo_url" == *"#tag="* ]]; then
+        ref="${repo_url#*#tag=}"
+        ref_type="tag"
+        repo_url="${repo_url%%#tag=*}"
+      elif [[ "$repo_url" == *"#commit="* ]]; then
+        ref="${repo_url#*#commit=}"
+        ref_type="commit"
+        repo_url="${repo_url%%#commit=*}"
+      fi
+      # Clone into the work/src directory directly (shallow + branch)
+      log "git clone --depth=1 ${repo_url} (${ref_type}=${ref})"
+      local clone_dir="$work/src"
+      rm -rf "$clone_dir"
+      mkdir -p "$clone_dir"
+      local git_args=(clone --depth=1 --no-tags --quiet)
+      if [[ "$ref_type" == "tag" ]]; then
+        git_args+=(--branch "$ref")
+      fi
+      git_args+=("$repo_url" "$clone_dir")
+      if ! git "${git_args[@]}" 2>&1 | tail -5; then
+        die "$pkg: git clone failed for $repo_url (ref=$ref)"
+      fi
+      # If commit-pinned, checkout that commit (shallow fetch may need extending)
+      if [[ "$ref_type" == "commit" ]]; then
+        ( cd "$clone_dir" && git fetch --depth=1 origin "$ref" && git checkout "$ref" ) \
+          || die "$pkg: git checkout failed for commit $ref"
+      fi
+      # Strip the .git directory to save space
+      rm -rf "$clone_dir/.git"
+      ok "cloned: $(basename "$repo_url") (${ref_type}=${ref})"
+      continue
+    fi
+
+    # --- local file:// sources ---
     if [[ "$url" == file://* ]]; then
       local src_path="${url#file://}"
       # Skip cp if src and dest are the same file (e.g. sources already in the
