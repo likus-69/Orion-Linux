@@ -1,0 +1,67 @@
+# packages/bash/build
+#
+# Three variants:
+#   variant=temp   — Stage 02 temporary /tools/bin/bash (no ncurses yet)
+#   variant=native — Stage 02 final /usr/bin/bash rebuild
+#   variant=final  — Stage 03 final /usr/bin/bash (with all features)
+
+set -euo pipefail
+variant="${variant:-final}"
+
+bash_src="$(ls -d ../bash-* 2>/dev/null | head -1)"
+[[ -d "$bash_src" ]] || bash_src=".."
+
+config_flags=(
+  --prefix=/usr
+  --without-bash-malloc
+  --with-installed-readline=/usr
+  --enable-readline
+  --enable-history
+  --enable-extended-glob
+  --enable-progcomp
+  --enable-process-substitution
+  --enable-arith-for-command
+  --enable-array-variables
+  --enable-brace-expansion
+  --enable-casemod-attributes
+  --enable-casemod-expansion
+  --enable-command-timing
+  --enable-cond-command
+  --enable-cond-regexp
+  --enable-coproc
+  --enable-directory-stack
+  --enable-dparen-arithmetic
+  --enable-extended-glob
+  --enable-job-control
+  --disable-nls
+  --disable-rpath
+  --enable-net-redirections
+)
+
+case "$variant" in
+  temp)
+    config_flags=(
+      --prefix=/tools
+      --without-bash-malloc
+      --disable-nls
+      --disable-rpath
+    )
+    install_dest="$LFS"
+    ;;
+  native|final)
+    install_dest="${DESTDIR:-}"
+    ;;
+  *)
+    echo "bash/build: unknown variant '$variant'" >&2; exit 2 ;;
+esac
+
+"$bash_src/configure" "${config_flags[@]}"
+make "$MAKEFLAGS"
+make install DESTDIR="$install_dest"
+
+# Symlink sh
+if [[ "$variant" != "temp" ]]; then
+  ln -sfv bash "${install_dest}/usr/bin/sh"
+else
+  ln -sfv bash "${install_dest}/tools/bin/sh"
+fi

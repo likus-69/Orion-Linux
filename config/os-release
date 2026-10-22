@@ -1,0 +1,14 @@
+NAME="Orion Linux"
+ID=orion
+ID_LIKE=lfs
+VERSION="0.1.0 (LFS 12.3 base)"
+VERSION_ID=0.1
+VERSION_CODENAME="heracles"
+PRETTY_NAME="Orion Linux 0.1.0 (heracles)"
+ANSI_COLOR="0;36"
+CPE_NAME="cpe:/o:orionlinux:orion_linux:0.1"
+HOME_URL="https://github.com/likus-69/Orion-Linux"
+DOCUMENTATION_URL="https://github.com/likus-69/Orion-Linux/blob/main/docs/INSTALL.md"
+SUPPORT_URL="https://github.com/likus-69/Orion-Linux/issues"
+BUG_REPORT_URL="https://github.com/likus-69/Orion-Linux/issues"
+BUILD_ID="20261018"

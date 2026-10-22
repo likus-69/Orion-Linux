@@ -1,0 +1,47 @@
+# packages/linux/build
+#
+# Build the Linux kernel for Orion Linux. Two modes:
+#
+#   target=headers — install API headers only (used by glibc in stage 01)
+#   (default)      — build the kernel image + modules
+#
+# This is invoked from scripts/05-build-kernel.sh; the build script
+# there does the orchestration (picks config, runs make, installs).
+# This file is provided so the package can also be built standalone via
+# `orion-pkg build linux` once the kernel source is extracted.
+
+set -euo pipefail
+
+target="${target:-kernel}"
+linux_src="$(ls -d ../linux-* 2>/dev/null | head -1)"
+[[ -d "$linux_src" ]] || linux_src=".."
+
+case "$target" in
+  headers)
+    # Clean install of API headers into $DESTDIR/usr/include
+    cd "$linux_src"
+    make mrproper
+    make headers_install INSTALL_HDR_PATH="${DESTDIR:-}/usr"
+    find "${DESTDIR:-}/usr/include" -name '.*.cmd' -delete
+    ;;
+  kernel)
+    # Use the right defconfig
+    cfg="../config-${ORION_ARCH:-$(uname -m)}"
+    [[ -f "$cfg" ]] || cfg=".config"
+    cp "$cfg" "$linux_src/.config"
+    cd "$linux_src"
+    make olddefconfig
+    make "$MAKEFLAGS" bzImage modules
+    make INSTALL_MOD_PATH="${DESTDIR:-}/" modules_install
+    # Install kernel image
+    install -Dm0644 System.map "${DESTDIR:-}/boot/System.map"
+    install -Dm0644 .config      "${DESTDIR:-}/boot/config"
+    if [[ "${ORION_ARCH:-$(uname -m)}" == "x86_64" ]]; then
+      install -Dm0644 arch/x86/boot/bzImage "${DESTDIR:-}/boot/vmlinuz"
+    else
+      install -Dm0644 arch/arm64/boot/Image "${DESTDIR:-}/boot/vmlinuz"
+    fi
+    ;;
+  *)
+    echo "linux/build: unknown target '$target'" >&2; exit 2 ;;
+esac

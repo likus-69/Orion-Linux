@@ -1,0 +1,268 @@
+#!/usr/bin/env bash
+# orion-installer — Orion Linux installer
+#
+# TUI installer for Orion Linux. Runs on the live ISO.
+# Walks the user through:
+#   1. Language / locale
+#   2. Disk partitioning
+#   3. Rootfs extraction (from the squashfs / netinst payload)
+#   4. Base system config (hostname, root password, user, tz, keymap)
+#   5. Desktop environment picker: GNOME / KDE / XFCE / none (CLI only)
+#   6. Bootloader install
+#   7. Generate fstab, finalize, reboot prompt
+#
+# Each step is a separate module under installer/modules/ for testability.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODULES_DIR="${ORION_INSTALLER_MODULES:-$SCRIPT_DIR/../usr/lib/orion-installer}"
+# When run from the source tree, modules live in installer/modules/
+[[ -d "$SCRIPT_DIR/modules" ]] && MODULES_DIR="$SCRIPT_DIR/modules"
+
+# Source modules
+for m in "$MODULES_DIR"/*.sh; do
+  # shellcheck disable=SC1090
+  source "$m"
+done
+
+# -----------------------------------------------------------------------------
+# Pretty output (same as orion-pkg)
+# -----------------------------------------------------------------------------
+if [[ -t 1 ]]; then
+  C_RESET=$'\033[0m'; C_RED=$'\033[31m'; C_GREEN=$'\033[32m'
+  C_YELLOW=$'\033[33m'; C_BLUE=$'\033[34m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
+else
+  C_RESET=""; C_RED=""; C_GREEN=""; C_YELLOW=""; C_BLUE=""; C_BOLD=""; C_DIM=""
+fi
+log()  { echo "${C_BLUE}==>${C_RESET} $*"; }
+info() { echo "${C_DIM}    $*${C_RESET}"; }
+ok()   { echo "${C_GREEN}    OK: $*${C_RESET}"; }
+warn() { echo "${C_YELLOW}!!  $*${C_RESET}" >&2; }
+err()  { echo "${C_RED}XX  $*${C_RESET}" >&2; }
+die()  { err "$*"; exit 1; }
+
+# Use whiptail if available, else fall back to bash read.
+HAVE_WHIPTAIL=0
+command -v whiptail >/dev/null 2>&1 && HAVE_WHIPTAIL=1
+
+# Sizes of the screen for the TUI
+ROWS=${LINES:-24}
+COLS=${COLUMNS:-80}
+
+# -----------------------------------------------------------------------------
+# Wizard state — accumulated answers
+# -----------------------------------------------------------------------------
+declare -gA STATE=(
+  [lang]="C"
+  [keymap]="us"
+  [timezone]="UTC"
+  [disk]=""
+  [hostname]="orion"
+  [root_password]=""
+  [user_name]="orion"
+  [user_password]=""
+  [desktop]="none"
+  [bootloader]="grub"
+  [swap_mb]="2048"
+  [root_fs]="ext4"
+)
+
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
+whip() {
+  if (( HAVE_WHIPTAIL == 1 )); then
+    whiptail "$@" 3>&1 1>&2 2>&3
+  else
+    # Fallback: read from stdin
+    echo "PROMPT: $*" >&2
+    read -r ans
+    echo "$ans"
+  fi
+}
+
+step_banner() {
+  local n="$1"; shift
+  echo ""
+  log "[$n] $*"
+}
+
+confirm_root() {
+  if [[ $EUID -ne 0 ]]; then
+    die "orion-installer must run as root. Try: sudo orion-installer"
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# Step 0: intro
+# -----------------------------------------------------------------------------
+step_intro() {
+  step_banner "0/7" "Welcome to the Orion Linux installer"
+  cat <<EOF
+
+This installer will guide you through:
+  1. Language and locale
+  2. Disk selection and partitioning
+  3. Base system installation
+  4. Hostname, root password, user creation
+  5. Desktop environment (GNOME / KDE / XFCE / none)
+  6. Bootloader installation
+  7. Finalization and reboot
+
+Press Enter to continue, Ctrl-C to abort.
+EOF
+  read -r
+}
+
+# -----------------------------------------------------------------------------
+# Step 1: language
+# -----------------------------------------------------------------------------
+step_language() {
+  step_banner "1/7" "Language, keymap, timezone"
+  local lang
+  lang=$(whip --title "Language" --menu "Choose your language" \
+        $ROWS $COLS 8 \
+        "en_US.UTF-8" "English (United States)" \
+        "en_GB.UTF-8" "English (United Kingdom)" \
+        "fr_FR.UTF-8" "Français (France)" \
+        "de_DE.UTF-8" "Deutsch (Deutschland)" \
+        "es_ES.UTF-8" "Español (España)" \
+        "it_IT.UTF-8" "Italiano (Italia)" \
+        "pt_BR.UTF-8" "Português (Brasil)" \
+        "ja_JP.UTF-8" "日本語 (日本)" \
+        3>&1 1>&2 2>&3 || echo "en_US.UTF-8")
+  STATE[lang]="$lang"
+
+  local keymap
+  keymap=$(whip --title "Keymap" --menu "Console keymap" \
+        $ROWS $COLS 4 \
+        "us" "US English" \
+        "uk" "United Kingdom" \
+        "de" "German" \
+        "fr" "French (AZERTY)" \
+        "dvorak" "Dvorak" \
+        3>&1 1>&2 2>&3 || echo "us")
+  STATE[keymap]="$keymap"
+
+  local tz
+  tz=$(whip --title "Timezone" --menu "Timezone" \
+        $ROWS $COLS 8 \
+        "UTC" "UTC (recommended for servers)" \
+        "Africa/Kampala" "Africa/Kampala" \
+        "Europe/London" "Europe/London" \
+        "Europe/Berlin" "Europe/Berlin" \
+        "Europe/Paris" "Europe/Paris" \
+        "America/New_York" "America/New York" \
+        "Asia/Tokyo" "Asia/Tokyo" \
+        "Africa/Nairobi" "Africa/Nairobi" \
+        3>&1 1>&2 2>&3 || echo "UTC")
+  STATE[timezone]="$tz"
+}
+
+# -----------------------------------------------------------------------------
+# Step 2: disk + partitioning
+# -----------------------------------------------------------------------------
+step_disk() {
+  step_banner "2/7" "Disk selection and partitioning"
+  installer_module_partition
+}
+
+# -----------------------------------------------------------------------------
+# Step 3: extract rootfs + base config
+# -----------------------------------------------------------------------------
+step_install_base() {
+  step_banner "3/7" "Installing base system"
+  installer_module_extract_rootfs
+  installer_module_config_base
+}
+
+# -----------------------------------------------------------------------------
+# Step 4: users
+# -----------------------------------------------------------------------------
+step_users() {
+  step_banner "4/7" "Users"
+  local hostname
+  hostname=$(whip --title "Hostname" --inputbox "Hostname for this machine" \
+        $ROWS $COLS "orion" 3>&1 1>&2 2>&3 || echo "orion")
+  STATE[hostname]="$hostname"
+
+  local root_pw root_pw2
+  while true; do
+    root_pw=$(whip --title "Root password" --passwordbox \
+        "Set the root password (leave empty to disable root login)" \
+        $ROWS $COLS -- 3>&1 1>&2 2>&3 || echo "")
+    [[ -z "$root_pw" ]] && break
+    root_pw2=$(whip --title "Confirm root password" --passwordbox \
+        "Confirm root password" $ROWS $COLS -- 3>&1 1>&2 2>&3 || echo "")
+    if [[ "$root_pw" == "$root_pw2" ]]; then break; fi
+    warn "passwords do not match — try again"
+  done
+  STATE[root_password]="$root_pw"
+
+  local user user_pw user_pw2
+  user=$(whip --title "User name" --inputbox "Create a normal user" \
+        $ROWS $COLS "orion" 3>&1 1>&2 2>&3 || echo "orion")
+  STATE[user_name]="$user"
+  while true; do
+    user_pw=$(whip --title "User password" --passwordbox \
+        "Set $user's password" $ROWS $COLS -- 3>&1 1>&2 2>&3 || echo "")
+    [[ -z "$user_pw" ]] && { warn "user password required"; continue; }
+    user_pw2=$(whip --title "Confirm user password" --passwordbox \
+        "Confirm $user's password" $ROWS $COLS -- 3>&1 1>&2 2>&3 || echo "")
+    if [[ "$user_pw" == "$user_pw2" ]]; then break; fi
+    warn "passwords do not match — try again"
+  done
+  STATE[user_password]="$user_pw"
+}
+
+# -----------------------------------------------------------------------------
+# Step 5: desktop picker
+# -----------------------------------------------------------------------------
+step_desktop() {
+  step_banner "5/7" "Desktop environment"
+  installer_module_pick_de
+  installer_module_install_de
+}
+
+# -----------------------------------------------------------------------------
+# Step 6: bootloader
+# -----------------------------------------------------------------------------
+step_bootloader() {
+  step_banner "6/7" "Bootloader"
+  installer_module_install_bootloader
+}
+
+# -----------------------------------------------------------------------------
+# Step 7: finalize
+# -----------------------------------------------------------------------------
+step_finalize() {
+  step_banner "7/7" "Finalize"
+  log "Unmounting and generating fstab"
+  installer_module_fstab
+  log "Generating initramfs"
+  chroot /mnt/orion dracut --kver "$(ls /mnt/orion/lib/modules)" --force 2>&1 | \
+    info "dracut:" || warn "dracut failed — kernel may boot without initramfs"
+  umount -R /mnt/orion
+  ok "install complete"
+  log "You can now reboot: systemctl reboot"
+}
+
+# -----------------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------------
+main() {
+  confirm_root
+  log "Orion Linux installer starting"
+  step_intro
+  step_language
+  step_disk
+  step_install_base
+  step_users
+  step_desktop
+  step_bootloader
+  step_finalize
+}
+
+main "$@"
+# vim: set ts=2 sw=2 noet:

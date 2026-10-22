@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# packages/grub/build — see scripts/06-build-bootloader.sh for the full
+# multi-target build (BIOS + EFI + per-arch). This stub is for the
+# `orion-pkg build grub` standalone case.
+set -euo pipefail
+grub_src="$(ls -d ../grub-* 2>/dev/null | head -1)"
+[[ -d "$grub_src" ]] || grub_src=".."
+case "${ORION_ARCH:-$(uname -m)}" in
+  x86_64)  platforms=(pc x86_64-efi) ;;
+  aarch64) platforms=(arm64-efi) ;;
+  *) echo "unsupported arch: ${ORION_ARCH}" >&2; exit 2 ;;
+esac
+for plat in "${platforms[@]}"; do
+  mkdir -p "build-$plat"
+  ( cd "build-$plat"
+    "$grub_src/configure" \
+      --prefix=/usr           \
+      --sbindir=/usr/sbin     \
+      --sysconfdir=/etc       \
+      --with-platform="$plat" \
+      --disable-werror
+    make "$MAKEFLAGS"
+    make install DESTDIR="${DESTDIR:-}"
+  )
+done

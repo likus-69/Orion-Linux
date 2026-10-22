@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# packages/openssl/build
+set -euo pipefail
+src="$(ls -d ../openssl-* 2>/dev/null | head -1)"
+[[ -d "$src" ]] || src=".."
+cd "$src"
+./config \
+  --prefix=/usr \
+  --openssldir=/etc/ssl \
+  --libdir=lib \
+  shared \
+  zlib
+make "$MAKEFLAGS"
+make install_sw install_ssldirs install_fips DESTDIR="${DESTDIR:-}"
+# Disable the FIPS module by default — Orion does not ship a signed fips.so
+sed -i "s@/usr/lib/ssl/fipsmodule.cnf@/dev/null@g" "${DESTDIR:-}/etc/ssl/openssl.cnf" || true

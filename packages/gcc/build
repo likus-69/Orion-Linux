@@ -1,0 +1,129 @@
+# packages/gcc/build
+#
+# GCC build script. Handles four build variants:
+#
+#   pass=1 target=gcc          — Stage 1 cross-toolchain (C-only, no libc)
+#   pass=1 target=libstdcxx    — Build libstdc++ only, against the new glibc
+#   pass=2 target=gcc          — Stage 1 pass 2: full C/C++ cross
+#   pass=3 target=gcc          — Native build inside chroot
+#
+# The default is pass=3.
+
+set -euo pipefail
+
+pass="${pass:-3}"
+target="${target:-gcc}"
+
+# Source directory (where the gcc tree was extracted)
+gcc_src="$(ls -d ../gcc-* 2>/dev/null | head -1)"
+[[ -d "$gcc_src" ]] || gcc_src=".."
+
+common_flags=(
+  --prefix=/usr
+  --disable-nls
+  --disable-werror
+  --enable-shared
+  --enable-threads=posix
+  --enable-__cxa_atexit
+  --enable-clocale=gnu
+  --enable-plugins
+  --enable-default-pie
+  --enable-default-ssp
+  --disable-multilib
+  --disable-bootstrap
+  --with-system-zlib
+  --without-isl
+)
+
+case "$pass/$target" in
+  1/gcc)
+    # Cross C-only, target triplet set, headers installed but no libc
+    common_flags=(
+      --prefix=/tools
+      --target="$LFS_TGT"
+      --disable-nls
+      --disable-werror
+      --disable-shared
+      --disable-multilib
+      --disable-decimal-float
+      --disable-libgomp
+      --disable-libatomic
+      --disable-libitm
+      --disable-libquadmath
+      --disable-libssp
+      --disable-libvtv
+      --disable-libsanitizer
+      --disable-libstdcxx
+      --enable-languages=c,c++
+      --without-headers
+      --with-sysroot="$LFS"
+      --with-newlib
+      --without-isl
+      --with-sysroot="$LFS"
+    )
+    ;;
+  1/libstdcxx)
+    # Build libstdc++ only, against the glibc we just installed in pass 1
+    cd "$gcc_src"
+    mkdir -p build-libstdcxx
+    cd       build-libstdcxx
+    ../libstdc++-v3/configure \
+      --prefix=/tools                       \
+      --host="$LFS_TGT"                     \
+      --disable-multilib                   \
+      --disable-nls                        \
+      --disable-libstdcxx-pch              \
+      --with-gxx-include-dir="$LFS/tools/$LFS_TGT/include/c++/${VERSION_PKG}"
+    make "$MAKEFLAGS"
+    make install DESTDIR="$LFS"
+    exit 0
+    ;;
+  2/gcc)
+    common_flags+=(
+      --target="$LFS_TGT"
+      --prefix=/tools
+      --with-sysroot="$LFS"
+      --enable-languages=c,c++,fortran
+      --disable-libsanitizer
+      --disable-libvtv
+    )
+    ;;
+  3/gcc)
+    # Native in chroot
+    common_flags+=(
+      --host="$LFS_TGT"
+      --enable-languages=c,c++,fortran,objc,obj-c++,ada,lto
+      --enable-libstdcxx
+      --enable-libgomp
+      --enable-libsanitizer
+      --enable-libitm
+      --enable-libquadmath
+      --enable-libatomic
+      --enable-install-libiberty
+      --with-isl=system
+    )
+    ;;
+esac
+
+# Note: --with-isl=system is conditional. If isl is not present, configure
+# will warn but the build still succeeds (gcc has internal fallback).
+# We don't redirect stderr here so the user sees the warning if it matters.
+
+# Build out-of-tree
+mkdir -p build-$pass-$target
+cd       build-$pass-$target
+
+"$gcc_src/configure" "${common_flags[@]}"
+
+make "$MAKEFLAGS"
+
+# Pass 1/2 install into $LFS/tools; pass 3 into $DESTDIR (the package payload)
+if [[ "$pass" == 1 || "$pass" == 2 ]]; then
+  make "$MAKEFLAGS" install DESTDIR="$LFS"
+  # Symlink gcc -> cc
+  ln -sfv gcc "$LFS/tools/bin/$LFS_TGT-cc"
+else
+  make "$MAKEFLAGS" install DESTDIR="${DESTDIR:-}"
+  ln -sfv gcc "${DESTDIR:-}/usr/bin/cc"
+  ln -sfv g++ "${DESTDIR:-}/usr/bin/c++"
+fi

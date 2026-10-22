@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# packages/coreutils/build
+set -euo pipefail
+variant="${variant:-final}"
+
+cu_src="$(ls -d ../coreutils-* 2>/dev/null | head -1)"
+[[ -d "$cu_src" ]] || cu_src=".."
+
+case "$variant" in
+  temp)
+    flags=(--prefix=/tools --enable-install-program=hostname --disable-nls)
+    install_dest="$LFS"
+    ;;
+  final)
+    flags=(--prefix=/usr --enable-install-program=hostname --disable-nls --disable-rpath)
+    install_dest="${DESTDIR:-}"
+    # Configure kernel runtime
+    echo "fuKsetv_expose_setuid=0" > config.log 2>/dev/null || true
+    ;;
+esac
+
+"$cu_src/configure" "${flags[@]}"
+make "$MAKEFLAGS"
+make install DESTDIR="$install_dest"
+
+# Move binaries out of /usr/bin/{hostname,kill,uptime} - LFS trick
+if [[ "$variant" == "final" ]]; then
+  for f in hostname kill uptime; do
+    [[ -f "${install_dest}/usr/bin/$f" ]] && mv "${install_dest}/usr/bin/$f" "${install_dest}/usr/bin/$f.real"
+  done
+fi

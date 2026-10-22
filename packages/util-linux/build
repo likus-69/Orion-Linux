@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# packages/util-linux/build
+set -euo pipefail
+variant="${variant:-final}"
+src="$(ls -d ../util-linux-* 2>/dev/null | head -1)"
+[[ -d "$src" ]] || src=".."
+case "$variant" in
+  temp)
+    flags=(--prefix=/tools --disable-nls --disable-makeinstall-chown)
+    install_dest="$LFS"
+    ;;
+  final)
+    flags=(
+      --prefix=/usr
+      --localstatedir=/var
+      --sysconfdir=/etc
+      --disable-nls
+      --enable-usrmerge
+      --with-bashcompletiondir=/usr/share/bash-completion/completions
+      --with-python=3
+      --without-systemd
+      --without-systemdsystemunitdir
+      --without-talloc
+      --enable-fdformat
+      --disable-wall
+      --enable-mount
+      --enable-losetup
+      --enable-swapon
+      --enable-fstrim
+      --enable-hwclock
+      --enable-agetty
+      --enable-last
+      --enable-sulogin
+      --enable-sulogin
+    )
+    install_dest="${DESTDIR:-}"
+    ;;
+esac
+"$src/configure" "${flags[@]}"
+make "$MAKEFLAGS"
+make install DESTDIR="$install_dest"

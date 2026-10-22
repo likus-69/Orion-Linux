@@ -1,0 +1,90 @@
+# images/Dockerfile.x86_64
+#
+# Build container for Orion Linux on x86_64.
+#
+# We use a fat Debian base because:
+#   1. We need a Linux kernel with binfmt_misc support to do foreign-arch
+#      builds (handled at the host level, not in this image).
+#   2. We need a stable bash/gcc/binutils to bootstrap the LFS cross-toolchain.
+#   3. None of Debian actually ends up in the final rootfs — only what we
+#      compile from source inside this container is shipped.
+#
+# Stage order in this image:
+#   - FROM base + apt deps
+#   - COPY scripts/ + packages/
+#   - RUN stages 00..07 sequentially (with caching at each step)
+#   - CMD entrypoint → /out/orion-rootfs-x86_64-$VERSION.tar.xz
+
+FROM --platform=linux/amd64 debian:12-slim AS base
+
+# Install build deps; persist no caches
+RUN apt-get update -qq \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      bash ca-certificates curl xz-utils gzip bzip2 tar \
+      bison flex texinfo gperf gettext \
+      g++ gcc make patch pkg-config \
+      libgmp-dev libmpfr-dev libmpc-dev libisl-dev \
+      libelf-dev libssl-dev zlib1g-dev libzstd-dev \
+      libpcre2-dev libexpat1-dev libffi-dev libnl-3-dev libnl-route-3-dev \
+      libcap-dev libattr1-dev libacl1-dev libseccomp-dev \
+      libblkid-dev libmount-dev libuuid1 uuid-dev \
+      kmod systemd-container dracut \
+      xorriso mtools dosfstools squashfs-tools \
+      fakeroot \
+      bc docbook-xml docbook-xsl \
+      python3 python3-jinja2 python3-pip \
+      perl \
+      vim less \
+      git \
+      qemu-utils \
+ && rm -rf /var/lib/apt/lists/*
+
+# Working directory
+WORKDIR /usr/src/orion
+
+# Copy everything (Makefile, scripts, packages, installer, orion-pkg, config, images)
+COPY . /usr/src/orion/
+
+# Build args
+ARG ARCH=x86_64
+ARG VERSION=dev
+ENV ORION_ARCH=$ARCH
+ENV ORION_VERSION=$VERSION
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LC_ALL=C.UTF-8
+ENV LANG=C.UTF-8
+
+# Output directory inside the container
+RUN mkdir -p /out /mnt/orion /var/orion/installed /var/orion/cache /var/orion/sources
+
+# Run each build stage as a separate RUN layer so failures resume cheaply.
+# Stage 00: host prep
+RUN bash -ex /usr/src/orion/scripts/00-host-prepare.sh \
+        || echo "stage 00 had issues; continuing"
+
+# Stage 01: cross-toolchain (the longest stage; ~3-4 hours on first run)
+RUN bash -ex /usr/src/orion/scripts/01-build-cross-toolchain.sh
+
+# Stage 02: temp tools (chroot)
+RUN bash -ex /usr/src/orion/scripts/02-build-temp-tools.sh
+
+# Stage 03: full LFS system (chroot, longest — 3-6 hours)
+RUN bash -ex /usr/src/orion/scripts/03-build-lfs-system.sh
+
+# Stage 04: config (branding, locale, users, systemd units, orion-pkg)
+RUN bash -ex /usr/src/orion/scripts/04-config-system.sh
+
+# Stage 05: kernel
+RUN bash -ex /usr/src/orion/scripts/05-build-kernel.sh
+
+# Stage 06: bootloader
+RUN bash -ex /usr/src/orion/scripts/06-build-bootloader.sh
+
+# Stage 07: package into rootfs tarball + squashfs
+RUN bash -ex /usr/src/orion/scripts/07-make-image.sh \
+        $ARCH $VERSION /out /mnt/orion
+
+# Final stage: copy the tarball out
+FROM scratch
+COPY --from=base /out/ /out/
+ENTRYPOINT ["echo", "Orion Linux x86_64 build container; see /out/"]

@@ -1,0 +1,86 @@
+# packages/binutils/build
+#
+# Build script for binutils 2.43.3 Handles three LFS passes via the
+# `pass=` argument:
+#
+#   pass=1 — cross-toolchain (stage 01), target triplet $LFS_TGT
+#   pass=2 — re-link against the just-built glibc (stage 01)
+#   pass=3 — native build inside chroot (stage 02/03)
+#
+# When sourced, CWD is the build dir. $DESTDIR is the install payload root.
+
+set -euo pipefail
+
+pass="${pass:-3}"
+
+# Common configure flags
+common_flags=(
+  --prefix=/usr
+  --build="$(../binutils-*/config.guess || echo "$LFS_TGT")"
+  --disable-nls
+  --disable-werror
+  --disable-gdb
+  --disable-gdbserver
+  --disable-gprof
+  --enable-64-bit-bfd
+  --enable-plugins
+  --enable-relro
+  --enable-shared
+  --enable-targets=all
+  --with-system-zlib
+)
+
+case "$pass" in
+  1)
+    # Cross-toolchain. Install into /tools.
+    install_prefix=/tools
+    common_flags=(
+      --prefix="$install_prefix"
+      --target="$LFS_TGT"
+      --disable-nls
+      --disable-werror
+      --enable-gold
+      --enable-ld=default
+      --enable-plugins
+      --enable-shared
+      --with-sysroot="$LFS"
+      --disable-gdb
+      --disable-gdbserver
+      --disable-gprof
+    )
+    ;;
+  2)
+    # Pass 2: same target, but now against the new glibc.
+    install_prefix=/tools
+    common_flags+=(
+      --target="$LFS_TGT"
+      --with-sysroot="$LFS"
+    )
+    ;;
+  3)
+    # Native inside chroot
+    install_prefix=/usr
+    common_flags+=(
+      --host="$(echo "$LFS_TGT" | sed 's/-orion-linux-gnu/-orion-linux-gnu/')"
+    )
+    ;;
+esac
+
+# Build out-of-tree
+mkdir -p build-$pass
+cd       build-$pass
+
+../binutils-*/configure "${common_flags[@]}"
+
+make "$MAKEFLAGS"
+
+if [[ "${pass:-3}" != 3 ]]; then
+  make "$MAKEFLAGS" install DESTDIR="$LFS"
+else
+  make "$MAKEFLAGS" install DESTDIR="${DESTDIR:-}"
+fi
+
+# Pass-2 specifics: relax the standards-check so old .o files link
+if [[ "$pass" == 2 ]]; then
+  sed -i 's/strict is too strict/\0 -no-keep-memory/' ld/Makefile || true
+fi

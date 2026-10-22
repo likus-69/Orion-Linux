@@ -1,0 +1,11 @@
+# Orion GRUB theme — minimal
+
+# Colors (GRUB uses its own names, not hex)
+set color_normal=light-cyan/black
+set color_highlight=white/blue
+set menu_color_normal=black/light-cyan
+set menu_color_highlight=white/blue
+
+# Background
+insmod png
+set theme=/boot/grub/themes/orion/theme.txt

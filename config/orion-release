@@ -1,0 +1,5 @@
+Orion Linux 0.1.0 "heracles"  (LFS 12.3 base, systemd, custom orion-pkg)
+Build date: 2026-10-18
+Architecture: multi (x86_64 + aarch64)
+Maintainer: likus-69
+Repo: https://github.com/likus-69/Orion-Linux

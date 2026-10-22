@@ -1,0 +1,44 @@
+# Build artifacts
+build/
+out/
+rootfs/
+sources/
+cache/
+*.tar.gz
+*.tar.xz
+*.iso
+*.img
+*.squashfs
+*.vmdk
+*.qcow2
+
+# Local overrides
+.env
+.env.local
+.local.mk
+
+# Editor / OS
+*.swp
+*.swo
+*~
+.DS_Store
+.idea/
+.vscode/
+*.bak
+
+# QEMU / Docker scratch
+.qemu/
+.docker-cache/
+
+# Logs
+*.log
+logs/
+
+# Compiled Python (if any helpers creep in)
+__pycache__/
+*.pyc
+
+# Local package build outputs (orion-pkg)
+packages/*/*/pkg/
+packages/*/*/*.tar.gz
+packages/*/*/installed/

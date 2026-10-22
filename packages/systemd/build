@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# packages/systemd/build
+set -euo pipefail
+
+sd_src="$(ls -d ../systemd-* 2>/dev/null | head -1)"
+[[ -d "$sd_src" ]] || sd_src=".."
+
+# meson + ninja are required
+command -v meson >/dev/null || { echo "meson not found" >&2; exit 2; }
+command -v ninja >/dev/null || { echo "ninja not found" >&2; exit 2; }
+
+mkdir -p build && cd build
+
+meson setup \
+  --prefix=/usr                       \
+  --buildtype=release                 \
+  --libexecdir=/usr/lib               \
+  --localstatedir=/var                \
+  --sysconfdir=/etc                   \
+  -Dmode=release                      \
+  -Ddefault-hierarchy=unified         \
+  -Ddefault-dnssec=allow-downgrade    \
+  -Ddoc=disabled                     \
+  -Dhtml=disabled                    \
+  -Dman=disabled                      \
+  -Dpamconfdir=no                     \
+  -Dsshpamdir=no                      \
+  -Dlogind=true                       \
+  -Dhostnamed=true                    \
+  -Dportabled=true                    \
+  -Dnetworkd=true                     \
+  -Dresolved=true                     \
+  -Dtimedated=true                    \
+  -Dtimesyncd=true                    \
+  -Dfirstboot=true                    \
+  -Dsysusers=true                     \
+  -Dtmpfiles=true                     \
+  -Dhwdb=true                         \
+  -Dmachined=true                     \
+  -Dimportd=false                     \
+  -Dnspawn=false                      \
+  -Dblkid=true                        \
+  -Dgcrypt=true                       \
+  -Dgnutls=false                      \
+  -Dmicrohttpd=false                  \
+  -Dlibidn2=false                     \
+  -Dlibcurl=false                     \
+  -Dlibiptc=false                     \
+  -Dbpf-framework=false              \
+  -Delfutils=true                     \
+  -Dzlib=true                         \
+  -Dxz=true                            \
+  -Dzstd=true                          \
+  -Dlz4=true                           \
+  -Dseccomp=true                       \
+  -Dpolkit=true                        \
+  -Daudit=false                       \
+  -Dbluetooth=false                   \
+  -Dkmod=true                         \
+  -Ddlm=false                          \
+  -Ddbus=true                         \
+  -Dglib=true                         \
+  -Dnls=disabled                      \
+  -Dtests=false                       \
+  -Dutmp=true                         \
+  -Dkickoff=true                      \
+  .. 
+
+ninja "$MAKEFLAGS"
+
+# Install to $DESTDIR
+DESTDIR="${DESTDIR:-}" ninja install
+
+# Symlinks + unit default target
+[[ -f /usr/lib/systemd/systemd ]] || true

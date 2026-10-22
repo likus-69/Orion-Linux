@@ -1,0 +1,130 @@
+# .github/workflows/build-x86_64.yml
+# Build the Orion Linux x86_64 rootfs + ISO via the LFS-from-scratch path.
+#
+# Manual-trigger only. The LFS path is incomplete (only ~50 of ~360
+# packages scaffolded) and will fail; this workflow is kept for the v0.2+
+# roadmap. Use build-v0.1.yml for a working v0.1 ISO.
+
+name: Build x86_64 (LFS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Ref to build (default: HEAD)"
+        required: false
+  push:
+    tags: ['v0.2*', 'v0.3*']   # only auto-trigger on v0.2+ tags
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-x86_64-lfs-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build rootfs + ISO (x86_64, LFS path)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 1200
+
+    steps:
+      - name: Free up disk space
+        run: |
+          # The default runner has only 14 GB free; we need ~50 GB.
+          # Remove docs, .net, haskell, docker images that ship with the runner.
+          sudo rm -rf /usr/share/dotnet /usr/share/swift /usr/share/gradle \
+                      /usr/share/rust /usr/local/lib/android \
+                      /opt/ghc /opt/hostedtoolcache/CodeQL \
+                      ~/.gradle ~/.dotnet ~/.rust
+          docker system prune -af || true
+          df -h /
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0   # need tags for `git describe`
+
+      - name: Set version + arch
+        id: meta
+        run: |
+          echo "version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+          echo "arch=x86_64" >> "$GITHUB_OUTPUT"
+
+      - name: Install host deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            shellcheck qemu-utils ovmf xorriso mtools dosfstools squashfs-tools
+          docker version
+          df -h /
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+
+      - name: Build Docker image (x86_64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/Dockerfile.x86_64
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: orion-linux:x86_64-${{ steps.meta.outputs.version }}
+          build-args: |
+            ARCH=x86_64
+            VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha,scope=x86_64
+          cache-to: type=gha,mode=max,scope=x86_64
+          outputs: |
+            type=local,dest=out
+
+      - name: Extract rootfs tarball from image
+        run: |
+          mkdir -p out
+          docker create --name extract orion-linux:x86_64-${{ steps.meta.outputs.version }} || true
+          docker cp extract:/out/. out/ || true
+          docker rm extract || true
+          ls -la out/
+
+      - name: Build netinst ISO
+        if: hashFiles('out/orion-rootfs-*.tar.xz') != ''
+        run: |
+          sudo ./scripts/08-release-artifacts.sh iso \
+            --arch ${{ steps.meta.outputs.arch }} \
+            --version ${{ steps.meta.outputs.version }} \
+            --rootfs "$(ls out/orion-rootfs-*.tar.xz | head -1)" \
+            --out out
+
+      - name: Compute checksums
+        run: |
+          cd out
+          for f in *.iso *.tar.xz; do
+            [[ -f "$f" ]] || continue
+            sha256sum "$f" > "$f.sha256"
+          done
+          ls -la
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: orion-linux-x86_64-${{ steps.meta.outputs.version }}
+          path: out/*
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Publish release on tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          generate_release_notes: true
+          draft: true
+          name: Orion Linux ${{ steps.meta.outputs.version }}

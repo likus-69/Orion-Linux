@@ -1,0 +1,68 @@
+# GNOME 47 desktop — Orion Linux
+# Installed via orion-pkg install -y <pkg> for each line.
+# Order matters: libs first, then services, then UI.
+
+# --- Base GNOME platform ---
+glib2
+gobject-introspection
+gdk-pixbuf
+cairo
+pango
+atk
+at-spi2-core
+gtk3
+gtk4
+gsettings-desktop-schemas
+gconf
+dconf
+glib-networking
+shared-mime-info
+desktop-file-utils
+xdg-utils
+
+# --- Sound + media ---
+alsa-lib
+alsa-utils
+pulseaudio
+pipewire
+wireplumber
+gst-plugins-base
+gst-plugins-good
+
+# --- Fonts + theming ---
+fontconfig
+freetype
+harfbuzz
+cantarell-fonts
+dejavu-fonts-ttf
+adwaita-icon-theme
+gnome-themes-extra
+
+# --- GNOME desktop ---
+gnome-desktop
+gnome-session
+gnome-shell
+gnome-shell-extensions
+gnome-control-center
+gnome-settings-daemon
+mutter
+gdm
+
+# --- Core apps ---
+gnome-terminal
+nautilus
+gnome-text-editor
+gnome-system-monitor
+gnome-screenshot
+yelp
+evince
+file-roller
+
+# --- Background services ---
+networkmanager
+network-manager-applet
+bluez
+bolt
+upower
+accountsservice
+polkit-gnome

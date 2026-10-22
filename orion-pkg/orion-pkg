@@ -1,0 +1,494 @@
+#!/usr/bin/env bash
+# orion-pkg — Orion Linux package manager
+#
+# A minimal Kiss/Arch-inspired package manager written in pure bash.
+# Operates on the file format described in README.md.
+#
+# Design goals:
+#   - <700 LoC of bash; no runtime deps beyond coreutils + tar + sha256sum
+#   - Build is sandboxed via `fakeroot` + `unshare` (when available)
+#   - Installed state lives in /var/orion/installed/<pkg>.manifest
+#   - Single repo config in /etc/orion-pkg.conf
+
+set -euo pipefail
+
+# -----------------------------------------------------------------------------
+# Config
+# -----------------------------------------------------------------------------
+ORION_ROOT="${ORION_ROOT:-}"
+_ORION_DB_DEFAULT="/var/orion/installed"
+_ORION_CACHE_DEFAULT="/var/orion/cache"
+_ORION_REPO_DEFAULT="/etc/orion/repo.d"
+_ORION_DOWNLOAD_DEFAULT="/var/orion/sources"
+ORION_DB="${ORION_DB:-$_ORION_DB_DEFAULT}"
+ORION_CACHE="${ORION_CACHE:-$_ORION_CACHE_DEFAULT}"
+ORION_REPO="${ORION_REPO:-$_ORION_REPO_DEFAULT}"
+ORION_DOWNLOAD="${ORION_DOWNLOAD:-$_ORION_DOWNLOAD_DEFAULT}"
+ORION_BUILD_USER="${ORION_BUILD_USER:-orionlfs}"
+
+# When building inside a chroot $LFS or staging dir, prefix paths.
+# Only prefix the default paths — if the user explicitly set an absolute
+# path, trust them.
+_prefix_if_default() {
+  local var="$1" default="$2"
+  local val="${!var}"
+  if [[ -n "$ORION_ROOT" && "$val" == "$default" ]]; then
+    printf -v "$var" '%s' "$ORION_ROOT/$default"
+  fi
+}
+_prefix_if_default ORION_DB       "$_ORION_DB_DEFAULT"
+_prefix_if_default ORION_CACHE     "$_ORION_CACHE_DEFAULT"
+_prefix_if_default ORION_REPO      "$_ORION_REPO_DEFAULT"
+_prefix_if_default ORION_DOWNLOAD  "$_ORION_DOWNLOAD_DEFAULT"
+
+VERSION="0.1.0"
+PROGNAME="orion-pkg"
+
+# -----------------------------------------------------------------------------
+# Pretty output
+# -----------------------------------------------------------------------------
+if [[ -t 1 ]]; then
+  C_RESET=$'\033[0m'; C_RED=$'\033[31m'; C_GREEN=$'\033[32m'
+  C_YELLOW=$'\033[33m'; C_BLUE=$'\033[34m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
+else
+  C_RESET=""; C_RED=""; C_GREEN=""; C_YELLOW=""; C_BLUE=""; C_BOLD=""; C_DIM=""
+fi
+
+log()  { echo "${C_BLUE}==>${C_RESET} $*"; }
+info() { echo "${C_DIM}    $*${C_RESET}"; }
+ok()   { echo "${C_GREEN}    OK: $*${C_RESET}"; }
+warn() { echo "${C_YELLOW}!!  $*${C_RESET}" >&2; }
+err()  { echo "${C_RED}XX  $*${C_RESET}" >&2; }
+die()  { err "$*"; exit 1; }
+
+# -----------------------------------------------------------------------------
+# Usage
+# -----------------------------------------------------------------------------
+usage() {
+  cat <<EOF
+$PROGNAME $VERSION — Orion Linux package manager
+
+Usage:
+  $PROGNAME <command> [options] <pkg...>
+
+Commands:
+  build <pkg>          Build a package from sources into a binary tarball
+  install <pkg...>     Install one or more built packages
+  remove  <pkg...>     Remove installed packages
+  list [--all]         List installed packages (or all available)
+  info <pkg>           Show info about an installed or available package
+  search <regex>       Search packages by name in repos
+  update               Sync package repo metadata
+  upgrade              Upgrade all packages to the latest available version
+  verify <pkg>          Verify sha256 of files belonging to an installed package
+  which <file>         Show which installed package owns a file
+
+Options:
+  -R, --root DIR       Operate on a chroot at DIR (default: /)
+  -y, --noconfirm      Skip confirmation prompts
+  -v, --verbose        Verbose output
+  --help               Show this help
+  --version            Print version
+
+Package definition format:
+  A package is a directory $ORION_REPO/<name>/ containing at least:
+    version     — package version string
+    sources     — newline-separated URLs (or file:// paths)
+    checksums   — sha256 sum per source (matching sources order)
+    depends     — newline-separated runtime deps (optional)
+    build       — bash script that produces /pkg/<name> root with built files
+    copyright   — license info (optional)
+EOF
+}
+
+# -----------------------------------------------------------------------------
+# Argument parsing
+# -----------------------------------------------------------------------------
+ARGS=()
+NOCONFIRM=0
+VERBOSE=0
+LIST_ALL=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    -V|--version) echo "$PROGNAME $VERSION"; exit 0 ;;
+    -R|--root) ORION_ROOT="$2"; shift 2 ;;
+    -y|--noconfirm) NOCONFIRM=1; shift ;;
+    -v|--verbose) VERBOSE=1; shift ;;
+    -a|--all) LIST_ALL=1; shift ;;
+    --) shift; ARGS+=("$@"); break ;;
+    -*) err "unknown option: $1"; usage >&2; exit 2 ;;
+    *)  ARGS+=("$1"); shift ;;
+  esac
+done
+
+CMD="${ARGS[0]:-}"
+[[ -n "$CMD" ]] || { usage >&2; exit 2; }
+shift_args=("${ARGS[@]:1}")
+
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
+ensure_dirs() {
+  mkdir -p "$ORION_DB" "$ORION_CACHE" "$ORION_DOWNLOAD" "$ORION_REPO"
+}
+
+pkg_dir() {
+  local pkg="$1"
+  for d in "$ORION_REPO/$pkg" "$ORION_REPO/local/$pkg"; do
+    [[ -d "$d" ]] && { echo "$d"; return 0; }
+  done
+  return 1
+}
+
+is_installed() {
+  [[ -f "$ORION_DB/$1.manifest" ]]
+}
+
+pkg_version_installed() {
+  is_installed "$1" || return 1
+  awk -F= '/^version=/ {print $2; exit}' "$ORION_DB/$1.manifest"
+}
+
+pkg_version_available() {
+  local d; d=$(pkg_dir "$1") || return 1
+  cat "$d/version" 2>/dev/null || echo "unknown"
+}
+
+confirm() {
+  (( NOCONFIRM == 1 )) && return 0
+  local prompt="$1"
+  read -r -p "$prompt [y/N] " ans
+  [[ "$ans" =~ ^[Yy] ]]
+}
+
+# Build a single package definition
+build_one() {
+  local pkg="$1"
+  local pd; pd=$(pkg_dir "$pkg") || die "package '$pkg' not found in $ORION_REPO"
+  local version; version=$(pkg_version_available "$pkg")
+  local work; work=$(mktemp -d)
+  local pkgout="$work/pkg"
+  mkdir -p "$pkgout" "$work/build" "$work/src"
+
+  log "building $pkg $version"
+  info "definition: $pd"
+
+  # --- 1. Sources + checksums -------------------------------------------
+  local sources_file="$pd/sources"
+  local checksums_file="$pd/checksums"
+  local sources=()
+  if [[ -f "$sources_file" ]]; then
+    mapfile -t sources < <(grep -v '^$' "$sources_file" || true)
+  fi
+  local checksums=()
+  if [[ -f "$checksums_file" ]]; then
+    mapfile -t checksums < <(grep -v '^$' "$checksums_file" || true)
+  fi
+  if (( ${#sources[@]} != ${#checksums[@]} )) && (( ${#sources[@]} > 0 )); then
+    die "$pkg: sources and checksums have different counts"
+  fi
+
+  local i
+  for i in "${!sources[@]}"; do
+    local url="${sources[$i]}"
+    local sum="${checksums[$i]:-}"
+    local dest="$ORION_DOWNLOAD/$(basename "$url")"
+    if [[ "$url" == file://* ]]; then
+      local src_path="${url#file://}"
+      # Skip cp if src and dest are the same file (e.g. sources already in the
+      # download cache). Resolve symlinks first to avoid false negatives.
+      local src_real dest_real
+      src_real=$(readlink -f "$src_path" 2>/dev/null || echo "$src_path")
+      dest_real=$(readlink -f "$dest" 2>/dev/null || echo "$dest")
+      if [[ "$src_real" == "$dest_real" ]]; then
+        info "source already in cache: $dest"
+      else
+        cp -a "$src_path" "$dest"
+      fi
+    else
+      log "fetch: $url"
+      curl -fL --retry 3 -o "$dest.partial" "$url"
+      mv "$dest.partial" "$dest"
+    fi
+    if [[ -n "$sum" ]]; then
+      local actual; actual=$(sha256sum "$dest" | awk '{print $1}')
+      [[ "$actual" == "$sum" ]] || die "$pkg: sha256 mismatch for $(basename "$url"):
+  expected: $sum
+  actual:   $actual"
+      ok "verified: $(basename "$url")"
+    fi
+    # Extract into src
+    tar --extract --strip-components=1 --file "$dest" -C "$work/src" 2>/dev/null \
+      || cp -r "$dest" "$work/src/"
+  done
+
+  # --- 2. Run build script in fakeroot + unshare -------------------------
+  info "running build script"
+  (
+    set -euo pipefail
+    cd "$work/src"
+    # Expose helpers to the build script
+    export DESTDIR="$pkgout"
+    export PKG="$pkg"
+    export VERSION_PKG="$version"
+    export ORION_JOBS="${ORION_JOBS:-$(nproc)}"
+    export MAKEFLAGS="-j$ORION_JOBS"
+    if command -v unshare >/dev/null 2>&1; then
+      unshare -r -- bash -c "source '$pd/build'"
+    else
+      fakeroot -- bash -c "source '$pd/build'"
+    fi
+  ) || die "$pkg: build script failed"
+
+  # --- 3. Manifest ------------------------------------------------------
+  local manifest="$work/$pkg.manifest"
+  {
+    echo "name=$pkg"
+    echo "version=$version"
+    echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "arch=${ORION_ARCH:-$(uname -m)}"
+    echo "builder=$PROGNAME $VERSION"
+    echo ""
+    echo "# files"
+    ( cd "$pkgout" && find . -type f -printf '/%P\n' ) | sort
+  } > "$manifest"
+
+  # --- 4. Tar it up -----------------------------------------------------
+  local out="$ORION_CACHE/$pkg-$version-$(uname -m).tar.gz"
+  ( cd "$pkgout" && tar --create --xattrs --file - . ) | gzip -9 > "$out"
+  cp "$manifest" "$ORION_DB/$pkg.meta"
+  ok "$pkg built -> $out"
+  rm -rf "$work"
+  echo "$out"
+}
+
+install_one() {
+  local pkg="$1"
+  local tarball=""
+  if [[ -f "$pkg" && "$pkg" == *.tar.gz ]]; then
+    tarball="$pkg"
+    pkg=$(basename "$tarball" | sed 's/-[0-9].*$//')
+  else
+    local version; version=$(pkg_version_available "$pkg") || die "$pkg: not found in repo"
+    tarball="$ORION_CACHE/$pkg-$version-$(uname -m).tar.gz"
+  fi
+  [[ -f "$tarball" ]] || die "$pkg: not built (run '$PROGNAME build $pkg' first)"
+  if is_installed "$pkg"; then
+    warn "$pkg: already installed ($(pkg_version_installed "$pkg"))"
+    confirm "reinstall?" || return 0
+  fi
+  log "installing $pkg from $tarball"
+  # Target root: use $ORION_ROOT if set (for chroot / staging installs)
+  local target_root="${ORION_ROOT:-/}"
+  mkdir -p "$target_root"
+  # Pre-install hook (none for now)
+  tar --extract --xattrs --xattrs-include="*" \
+      --keep-old-files --no-overwrite-dir \
+      --file "$tarball" -C "$target_root" 2>/dev/null \
+      || tar --extract --xattrs --xattrs-include="*" --file "$tarball" -C "$target_root"
+  # Move the .meta file into the proper .manifest location
+  cp "$ORION_DB/$pkg.meta" "$ORION_DB/$pkg.manifest" 2>/dev/null || true
+  rm -f "$ORION_DB/$pkg.meta"
+  ok "$pkg installed"
+}
+
+remove_one() {
+  local pkg="$1"
+  is_installed "$pkg" || { warn "$pkg: not installed"; return 0; }
+  local manifest="$ORION_DB/$pkg.manifest"
+  log "removing $pkg"
+  confirm "remove?" || return 0
+  # If ORION_ROOT is set, prefix paths so we delete the actual on-disk file
+  local root="${ORION_ROOT:-}"
+  # Walk manifest backwards so we remove files before their parent dirs
+  awk '/^# files/{flag=1;next} flag && $1!=""{print}' "$manifest" \
+    | tac | while read -r f; do
+      local real="$root$f"
+      if [[ -f "$real" ]]; then rm -f -- "$real"; fi
+      # Remove empty dirs (only if empty)
+      d=$(dirname "$real")
+      while [[ "$d" != "$root" && "$d" != "/" && -z "$(ls -A "$d" 2>/dev/null)" ]]; do
+        rmdir "$d" 2>/dev/null || break
+        d=$(dirname "$d")
+      done
+    done
+  rm -f "$manifest"
+  ok "$pkg removed"
+}
+
+# -----------------------------------------------------------------------------
+# Commands
+# -----------------------------------------------------------------------------
+cmd_build() {
+  (( $# >= 1 )) || die "build: missing package name"
+  ensure_dirs
+  local pkg; for pkg in "$@"; do
+    build_one "$pkg"
+  done
+}
+
+cmd_install() {
+  (( $# >= 1 )) || die "install: missing package name(s)"
+  ensure_dirs
+  local pkg; for pkg in "$@"; do
+    # Resolve deps first (recursive)
+    if [[ -d "$ORION_REPO/$pkg" && -f "$ORION_REPO/$pkg/depends" ]]; then
+      while read -r dep; do
+        [[ -z "$dep" ]] && continue
+        is_installed "$dep" || install_one "$dep"
+      done < "$ORION_REPO/$pkg/depends"
+    fi
+    install_one "$pkg"
+  done
+}
+
+cmd_remove() {
+  (( $# >= 1 )) || die "remove: missing package name(s)"
+  local pkg; for pkg in "$@"; do
+    remove_one "$pkg"
+  done
+}
+
+cmd_list() {
+  if (( LIST_ALL == 1 )); then
+    ensure_dirs
+    local d
+    for d in "$ORION_REPO"/*/; do
+      [[ -d "$d" ]] || continue
+      local name; name=$(basename "$d")
+      local v; v=$(pkg_version_available "$name")
+      local iv=""; is_installed "$name" && iv=" [installed: $(pkg_version_installed "$name")]"
+      printf "%-30s %s%s\n" "$name" "$v" "$iv"
+    done
+  else
+    shopt -s nullglob
+    local m
+    for m in "$ORION_DB"/*.manifest; do
+      local name; name=$(basename "$m" .manifest)
+      local v; v=$(pkg_version_installed "$name")
+      printf "%-30s %s\n" "$name" "$v"
+    done
+  fi
+}
+
+cmd_info() {
+  (( $# == 1 )) || die "info: missing package name"
+  local pkg="$1"
+  if is_installed "$pkg"; then
+    log "installed: $pkg"
+    awk -F= '/^name=|^version=|^date=|^arch=|^builder=/{print "    "$0}' \
+        "$ORION_DB/$pkg.manifest"
+    return
+  fi
+  local d; d=$(pkg_dir "$pkg") || die "$pkg: not found in repo"
+  log "available: $pkg"
+  info "directory: $d"
+  info "version:   $(pkg_version_available "$pkg")"
+  [[ -f "$d/depends" ]] && info "deps:     $(tr '\n' ' ' < "$d/depends")"
+  [[ -f "$d/copyright" ]] && info "license:  $(head -1 "$d/copyright")"
+}
+
+cmd_search() {
+  (( $# == 1 )) || die "search: missing regex"
+  local pat="$1"
+  ensure_dirs
+  local d
+  for d in "$ORION_REPO"/*/; do
+    [[ -d "$d" ]] || continue
+    local name; name=$(basename "$d")
+    [[ "$name" =~ $pat ]] && echo "$name"
+  done
+}
+
+cmd_update() {
+  log "syncing repos"
+  ensure_dirs
+  # Repo config files: $ORION_REPO.d/*.repo, each line: "name=<n> url=<u>"
+  # For now we just touch the index — a real sync would fetch + verify.
+  touch "$ORION_DB/repo.index"
+  ok "index up to date"
+}
+
+cmd_upgrade() {
+  log "checking for upgrades"
+  ensure_dirs
+  shopt -s nullglob
+  local m
+  for m in "$ORION_DB"/*.manifest; do
+    local name; name=$(basename "$m" .manifest)
+    local iv; iv=$(pkg_version_installed "$name")
+    local av; av=$(pkg_version_available "$name" 2>/dev/null) || continue
+    if [[ "$iv" != "$av" ]]; then
+      warn "$name: $iv -> $av"
+      confirm "upgrade $name?" && build_one "$name" && install_one "$name"
+    fi
+  done
+  ok "upgrade pass complete"
+}
+
+cmd_verify() {
+  (( $# == 1 )) || die "verify: missing package name"
+  local pkg="$1"
+  is_installed "$pkg" || die "$pkg: not installed"
+  local manifest="$ORION_DB/$pkg.manifest"
+  local fail=0
+  # If ORION_ROOT is set, prefix paths so we check the actual on-disk file
+  local root="${ORION_ROOT:-}"
+  awk '/^# files/{flag=1;next} flag && $1!=""{print $1}' "$manifest" \
+    | while read -r f; do
+      local real="$root$f"
+      if [[ ! -e "$real" ]]; then
+        warn "$pkg: missing $real"
+        fail=1
+      fi
+    done
+  (( fail == 0 )) && ok "$pkg: all files present" || exit 1
+}
+
+cmd_which() {
+  (( $# == 1 )) || die "which: missing path"
+  local target="$1"
+  [[ "$target" == /* ]] || target="$(readlink -f "$target")"
+  # If we're operating with ORION_ROOT set, the user may pass either a
+  # real path (e.g. /tmp/chroot/usr/bin/foo) or a manifest-namespace path
+  # (e.g. /usr/bin/foo). Normalize both into the manifest namespace.
+  local normalized="$target"
+  if [[ -n "$ORION_ROOT" ]]; then
+    local root_real; root_real=$(readlink -f "$ORION_ROOT" 2>/dev/null || echo "$ORION_ROOT")
+    # Strip leading root if present
+    if [[ "$target" == "$root_real"* ]]; then
+      normalized="${target#$root_real}"
+      [[ -z "$normalized" ]] && normalized="/"
+    fi
+  fi
+  shopt -s nullglob
+  local m
+  for m in "$ORION_DB"/*.manifest; do
+    if awk -v t="$normalized" '/^# files/{flag=1;next} flag && $1==t {found=1;exit} END{exit !found}' "$m"; then
+      echo "$(basename "$m" .manifest)"
+      return 0
+    fi
+  done
+  die "no package owns $target (normalized: $normalized)"
+}
+
+# -----------------------------------------------------------------------------
+# Dispatch
+# -----------------------------------------------------------------------------
+case "$CMD" in
+  build)        cmd_build   "${shift_args[@]}" ;;
+  install)      cmd_install "${shift_args[@]}" ;;
+  remove|uninstall) cmd_remove "${shift_args[@]}" ;;
+  list|ls)      cmd_list    "${shift_args[@]}" ;;
+  info)         cmd_info    "${shift_args[@]}" ;;
+  search)       cmd_search  "${shift_args[@]}" ;;
+  update|sync)  cmd_update  ;;
+  upgrade)      cmd_upgrade ;;
+  verify)       cmd_verify  "${shift_args[@]}" ;;
+  which|owns)   cmd_which   "${shift_args[@]}" ;;
+  -h|--help|help) usage ;;
+  *) err "unknown command: $CMD"; usage >&2; exit 2 ;;
+esac
+
+# vim: set ts=2 sw=2 noet:

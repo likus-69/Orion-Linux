@@ -1,0 +1,11 @@
+# /etc/fstab — template
+#
+# The installer overwrites this file with concrete UUIDs at install time.
+# This template is here so that a non-installed (e.g. chroot) image still
+# has a syntactically-valid fstab.
+
+# filesystem                    mountpoint   type   options                       dump pass
+/dev/orion/root                /            ext4   defaults,noatime              0    1
+/dev/orion/swap                swap         swap   defaults                      0    0
+tmpfs                          /tmp         tmpfs  mode=1777,nosuid,nodev        0    0
+tmpfs                          /run         tmpfs  mode=0755,nosuid,nodev,size=10% 0   0

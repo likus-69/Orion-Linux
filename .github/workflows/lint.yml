@@ -1,0 +1,82 @@
+# .github/workflows/lint.yml
+# Lint every shell script in the repo with shellcheck.
+# Runs on every push to main + manual trigger.
+
+name: Lint
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Run shellcheck
+        run: |
+          # SC1090/SC1091: don't try to follow sourced files
+          shellcheck -x -e SC1090,SC1091 \
+            scripts/*.sh scripts/lib/*.sh \
+            orion-pkg/orion-pkg \
+            installer/orion-installer installer/modules/*.sh \
+            images/entrypoint.sh
+
+  test-orion-pkg:
+    name: orion-pkg smoke test
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install test deps (gcc, tar)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc tar curl
+
+      - name: Run orion-pkg smoke test
+        run: |
+          bash orion-pkg/tests/test_basic.sh
+
+  markdown-lint:
+    name: markdown link check
+    runs-on: ubuntu-22.22
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check markdown internal links
+        run: |
+          # Crude check: warn if any [text](relative-path.md) link is broken
+          rc=0
+          while IFS= read -r file; do
+            while IFS= read -r line; do
+              link="${line#*](}"
+              link="${link%%)*}"
+              link="${link%%\?*}"
+              [[ "$link" == /* || "$link" == http* || "$link" == "" ]] && continue
+              target="$(dirname "$file")/$link"
+              if [[ ! -e "$target" ]]; then
+                echo "::warn file=$file::broken link: $link"
+              fi
+            done < <(grep -oE '\[[^]]*\]\([^)]+\)' "$file" 2>/dev/null)
+          done < <(find . -name "*.md" -not -path "./build/*" -not -path "./out/*")

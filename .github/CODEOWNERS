@@ -1,0 +1,23 @@
+# Code owners for Orion Linux
+# Reviewers for each area; PRs auto-request review from these users.
+
+# Default — owner of everything not otherwise specified
+*                          @likus-69
+
+# Build pipeline
+/scripts/                  @likus-69
+
+# Package manager
+/orion-pkg/                @likus-69
+
+# Installer
+/installer/                @likus-69
+
+# CI
+/.github/workflows/        @likus-69
+
+# Package definitions
+/packages/                 @likus-69
+
+# Documentation
+/docs/                     @likus-69

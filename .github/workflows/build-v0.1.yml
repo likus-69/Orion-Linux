@@ -1,0 +1,122 @@
+# .github/workflows/build-v0.1.yml
+# Build the v0.1 Orion Linux rootfs + ISO via the Debian-bootstrap fast path.
+#
+# Manual-trigger only (workflow_dispatch). Triggers:
+#   - Click "Run workflow" on the Actions tab
+#   - Push a tag v0.1.x to also publish a draft release
+
+name: Build v0.1 (bootstrap)
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: "Target arch (x86_64 or aarch64)"
+        type: choice
+        options: [x86_64, aarch64]
+        default: x86_64
+      push_release:
+        description: "Publish a draft GitHub Release (only on tag pushes)"
+        type: boolean
+        default: false
+  push:
+    tags: ['v0.1*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-v0.1-${{ github.ref }}-${{ inputs.arch || 'x86_64' }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build rootfs + ISO (${{ inputs.arch || 'x86_64' }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90   # bootstrap path is ~20-30 min; allow up to 90 for first run
+
+    steps:
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/share/swift /usr/share/gradle \
+                      /usr/share/rust /usr/local/lib/android \
+                      /opt/ghc /opt/hostedtoolcache/CodeQL \
+                      ~/.gradle ~/.dotnet ~/.rust
+          docker system prune -af || true
+          df -h /
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set version + arch
+        id: meta
+        run: |
+          echo "version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+          echo "arch=${{ inputs.arch || 'x86_64' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Install host deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            shellcheck qemu-utils ovmf xorriso mtools dosfstools squashfs-tools
+          docker version
+
+      - name: Register QEMU for cross-arch builds (aarch64 only)
+        if: steps.meta.outputs.arch == 'aarch64'
+        run: |
+          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+          cat /proc/sys/fs/binfmt_misc/qemu-aarch64 | head -1 || true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+
+      - name: Build rootfs + ISO
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/Dockerfile.bootstrap
+          platforms: ${{ steps.meta.outputs.arch == 'aarch64' && 'linux/arm64' || 'linux/amd64' }}
+          push: false
+          load: true
+          tags: orion-linux:v0.1-${{ steps.meta.outputs.arch }}-${{ steps.meta.outputs.version }}
+          build-args: |
+            ARCH=${{ steps.meta.outputs.arch }}
+            VERSION=${{ steps.meta.outputs.version }}
+            TARGETARCH=${{ steps.meta.outputs.arch == 'aarch64' && 'arm64' || 'amd64' }}
+          cache-from: type=gha,scope=v0.1-${{ steps.meta.outputs.arch }}
+          cache-to: type=gha,mode=max,scope=v0.1-${{ steps.meta.outputs.arch }}
+          outputs: |
+            type=local,dest=out
+
+      - name: Compute checksums
+        run: |
+          cd out
+          for f in *.iso *.tar.xz *.img*; do
+            [[ -f "$f" ]] || continue
+            sha256sum "$f" > "$f.sha256"
+          done
+          ls -la
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: orion-linux-v0.1-${{ steps.meta.outputs.arch }}-${{ steps.meta.outputs.version }}
+          path: out/*
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Publish draft release (only on tag push)
+        if: startsWith(github.ref, 'refs/tags/v0.1') && (github.event_name == 'push' || inputs.push_release)
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          generate_release_notes: true
+          draft: true
+          name: Orion Linux ${{ steps.meta.outputs.version }}

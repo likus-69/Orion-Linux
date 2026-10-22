@@ -1,0 +1,108 @@
+# packages/glibc/build
+#
+# Build glibc 2.40. Three modes via `mode=`:
+#   mode=cross   — Stage 01: cross-target build, installed into $LFS
+#   mode=native  — Stage 03: native build in chroot, installed into $DESTDIR
+# Default mode = cross.
+
+set -euo pipefail
+
+mode="${mode:-cross}"
+
+glibc_src="$(ls -d ../glibc-* 2>/dev/null | head -1)"
+[[ -d "$glibc_src" ]] || glibc_src=".."
+
+case "$ORION_ARCH" in
+  x86_64)  case "$mode" in
+    cross)   common_flags=(
+      --prefix=/usr
+      --host="$LFS_TGT"
+      --build="$(echo "$LFS_TGT" | sed 's/-orion/-cross-orion/')"
+      --enable-kernel=4.19
+      --disable-nscd
+      --disable-werror
+      libc_cv_slibdir=/usr/lib
+      libc_cv_forced_unwind=yes
+      libc_cv_c_cleanup=yes
+      libc_cv_ctors=yes
+    )
+    install_destdir="$LFS"
+    ;;
+  native) common_flags=(
+      --prefix=/usr
+      --host="$LFS_TGT"
+      --enable-kernel=4.19
+      --disable-nscd
+      --disable-werror
+      libc_cv_slibdir=/usr/lib
+    )
+    install_destdir="${DESTDIR:-}"
+    ;;
+esac
+;;
+  aarch64) case "$mode" in
+    cross)   common_flags=(
+      --prefix=/usr
+      --host="$LFS_TGT"
+      --build="$(echo "$LFS_TGT" | sed 's/-orion/-cross-orion/')"
+      --enable-kernel=5.10
+      --disable-nscd
+      --disable-werror
+      libc_cv_slibdir=/usr/lib
+    )
+    install_destdir="$LFS"
+    ;;
+  native) common_flags=(
+      --prefix=/usr
+      --host="$LFS_TGT"
+      --enable-kernel=5.10
+      --disable-nscd
+      --disable-werror
+    )
+    install_destdir="${DESTDIR:-}"
+    ;;
+esac
+;;
+  *) echo "unsupported arch for glibc: $ORION_ARCH" >&2; exit 2 ;;
+esac
+
+# Build out-of-tree
+mkdir -p build-$mode
+cd       build-$mode
+
+"$glibc_src/configure" "${common_flags[@]}"
+
+make "$MAKEFLAGS"
+
+make install DESTDIR="$install_destdir"
+
+# Config files
+case "$mode" in
+  cross)
+    # nsswitch.conf
+    cat > "$install_destdir/etc/nsswitch.conf" <<EOF
+passwd: files systemd
+group:  files systemd
+shadow: files systemd
+
+hosts:  files dns
+networks: files dns
+
+protocols: files
+services:  files
+ethers:    files
+rpc:       files
+EOF
+    # ld.so.conf
+    cat > "$install_destdir/etc/ld.so.conf" <<EOF
+/usr/local/lib
+/usr/lib
+include /etc/ld.so.conf.d/*.conf
+EOF
+    mkdir -p "$install_destdir/etc/ld.so.conf.d"
+    ;;
+  native)
+    # Recompile locales
+    make localedata/install-locales -C . 2>&1 || true
+    ;;
+esac

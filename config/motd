@@ -1,0 +1,13 @@
+Welcome to Orion Linux!
+
+This is a development preview. Things will break. Have fun.
+
+- To install Orion Linux to disk, run:  orion-installer
+- To see what's installed:               orion-pkg list
+- To search for a package:               orion-pkg search <name>
+- To read the docs:                      less /usr/share/doc/orion/
+
+Online:
+  https://github.com/likus-69/Orion-Linux
+  https://github.com/likus-69/Orion-Linux/issues
+

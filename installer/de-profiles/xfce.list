@@ -1,0 +1,76 @@
+# XFCE 4.20 desktop — Orion Linux
+# Lightweight, fast on ARM SBCs.
+
+# --- X server + base ---
+xorg-server
+xorg-x11
+xf86-input-libinput
+xf86-video-amdgpu
+xf86-video-intel
+xf86-video-nouveau
+mesa
+vulkan
+
+# --- X libs ---
+xcb-util
+xcb-util-keysyms
+xcb-util-cursor
+xcb-util-wm
+xcb-util-xrm
+xorg-xinit
+xorg-xsetroot
+xorg-xrandr
+
+# --- GTK (XFCE uses GTK3) ---
+glib2
+gtk3
+gtk2
+cairo
+pango
+atk
+gdk-pixbuf
+
+# --- Theming + icons ---
+hicolor-icon-theme
+adwaita-icon-theme
+gnome-themes-extra
+gtk-engines
+gtk-xfce-engine
+
+# --- XFCE core ---
+libxfce4util
+libxfce4ui
+xfconf
+libxfce4windowing
+garcon
+xfce4-panel
+xfce4-session
+xfwm4
+xfdesktop
+xfsettingsd
+xfce4-appfinder
+xfce4-terminal
+thunar
+thunar-volman
+tumbler
+exo
+
+# --- Display manager ---
+lightdm
+lightdm-gtk-greeter
+
+# --- Selected apps ---
+mousepad
+ristretto
+xfce4-taskmanager
+xfce4-screenshooter
+
+# --- Sound + media ---
+alsa-lib
+alsa-utils
+pulseaudio
+pipewire
+
+# --- Networking ---
+networkmanager
+network-manager-applet

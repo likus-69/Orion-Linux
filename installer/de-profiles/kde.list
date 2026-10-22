@@ -1,0 +1,75 @@
+# KDE Plasma 6 desktop — Orion Linux
+
+# --- KDE Frameworks 6 base ---
+extra-cmake-modules
+qt6-base
+qt6-declarative
+qt6-wayland
+polkit-qt-1
+phonon
+karchive
+kcodecs
+kconfig
+kcoreaddons
+kdbusaddons
+kdnssd
+kguiaddons
+ki18n
+kidletime
+kitemmodels
+kitemviews
+kwidgetsaddons
+
+# --- KDE Frameworks tier 2 ---
+kwindowsystem
+kcrash
+kglobalaccel
+kjobwidgets
+kiconthemes
+kcompletion
+kconfigwidgets
+kwallet
+knotifications
+knotify-config
+kservice
+kwallet
+solid
+kpeople
+kxmlgui
+kbookmarks
+kcmutils
+
+# --- KDE Plasma 6 ---
+plasma-workspace
+plasma-desktop
+plasma-nm
+plasma-pa
+powerdevil
+kwin
+kwayland
+sddm
+sddm-kcm
+kscreen
+kscreenlocker
+bluedevil
+khotkeys
+
+# --- KDE Gear (selected apps) ---
+dolphin
+konsole
+kate
+kcalc
+kfind
+okular
+gwenview
+spectacle
+yakuake
+
+# --- Supporting libs ---
+pipewire
+wireplumber
+pulseaudio-qt
+xorg-server
+xorg-x11
+mesa
+vulkan
