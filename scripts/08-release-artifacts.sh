@@ -73,8 +73,12 @@ do_iso() {
   cp "$rootfs_dir"/boot/System.map*     "$isodir"/boot/ 2>/dev/null || true
   cp "$rootfs_dir"/boot/config-*        "$isodir"/boot/ 2>/dev/null || true
   # Initrd (if dracut ran during build) else synthesize a tiny one
-  if [[ -f "$rootfs_dir"/boot/initrd.img-* ]]; then
-    cp "$rootfs_dir"/boot/initrd.img-* "$isodir"/boot/initrd.img
+  # [[ -f *.foo ]] doesn't work in bash — the glob isn't expanded inside [[ ]].
+  # Use a shell glob via ls + head to find the first match.
+  local _initrd
+  _initrd=$(ls "$rootfs_dir"/boot/initrd.img-* 2>/dev/null | head -1 || true)
+  if [[ -n "$_initrd" ]]; then
+    cp "$_initrd" "$isodir"/boot/initrd.img
   fi
 
   # Grub config for ISO

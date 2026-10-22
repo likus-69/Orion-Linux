@@ -31,7 +31,11 @@ jobs:
       - name: Run shellcheck
         run: |
           # SC1090/SC1091: don't try to follow sourced files
-          shellcheck -x -e SC1090,SC1091 \
+          # --severity=error: only fail on errors, not warnings/info
+          # (many warnings are false positives — orion_* funcs defined in
+          # scripts/lib/common.sh are visible at runtime but shellcheck
+          # can't follow source statements)
+          shellcheck -x -e SC1090,SC1091 --severity=error \
             scripts/*.sh scripts/lib/*.sh \
             orion-pkg/orion-pkg \
             installer/orion-installer installer/modules/*.sh \

@@ -114,8 +114,12 @@ stage_iso() {
     cp "$LFS_DIR"/boot/vmlinuz-* "$work"/isoroot/boot/vmlinuz
   cp "$LFS_DIR"/boot/System.map* "$work"/isoroot/boot/ 2>/dev/null || true
   cp "$LFS_DIR"/boot/config-*    "$work"/isoroot/boot/ 2>/dev/null || true
-  if [[ -f "$LFS_DIR"/boot/initrd.img-* ]]; then
-    cp "$LFS_DIR"/boot/initrd.img-* "$work"/isoroot/boot/initrd.img
+  # [[ -f *.foo ]] doesn't work in bash — the glob isn't expanded inside [[ ]].
+  # Use a shell glob via ls + head to find the first match.
+  local _initrd
+  _initrd=$(ls "$LFS_DIR"/boot/initrd.img-* 2>/dev/null | head -1 || true)
+  if [[ -n "$_initrd" ]]; then
+    cp "$_initrd" "$work"/isoroot/boot/initrd.img
   fi
 
   # Grub config for the ISO

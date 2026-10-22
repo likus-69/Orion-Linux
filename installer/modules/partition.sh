@@ -56,29 +56,34 @@ installer_module_partition() {
   # Wait for kernel to re-read the partition table
   partprobe "${STATE[disk]}" 2>/dev/null || sleep 2
 
-  local p1="" p2="" p3="" p4=""
+  # Partition numbering:
+  #   x86_64:  p1=BIOS boot (1MiB), p2=ESP (512MiB), p3=swap (optional), p4=root
+  #   aarch64: p2=ESP (512MiB), p3=swap (optional), p4=root (p1 unused)
+  local p1="" p2 p3="" p4
+  local next_part=1
   if [[ "${ORION_ARCH:-$(uname -m)}" == "x86_64" ]]; then
     # BIOS boot partition (1 MiB) for grub-install when hybrid
     sgdisk --new=1:0:+1M --typecode=1:EF02 \
            --change-name=1:"BIOS boot" "${STATE[disk]}"
     p1=1
+    next_part=2
   fi
   # EFI system partition
-  sgdisk --new=$(( ${p1:+${p1}+1} 2 )):0:+512M --typecode=2:EF00 \
-         --change-name=2:"EFI System" "${STATE[disk]}"
-  p2=$(( ${p1:+${p1}+1} 2 ))
-  # Swap
+  p2=$next_part
+  sgdisk --new="$p2:0:+512M" --typecode="$p2:EF00" \
+         --change-name="$p2:EFI System" "${STATE[disk]}"
+  next_part=$(( p2 + 1 ))
+  # Swap (optional)
   if (( swap_mb > 0 )); then
-    sgdisk --new=$(( p2+1 )):0:+${swap_mb}M --typecode=$(( p2+1 )):8200 \
-           --change-name=$(( p2+1 )):"Linux swap" "${STATE[disk]}"
-    p3=$(( p2+1 ))
-  else
-    p3=""
+    p3=$next_part
+    sgdisk --new="$p3:0:+${swap_mb}M" --typecode="$p3:8200" \
+           --change-name="$p3:Linux swap" "${STATE[disk]}"
+    next_part=$(( p3 + 1 ))
   fi
   # Root (rest of disk)
-  sgdisk --new=$(( ${p3:-$p2}+1 )):0:0 --typecode=$(( ${p3:-$p2}+1 )):8300 \
-         --change-name=$(( ${p3:-$p2}+1 )):"Linux root" "${STATE[disk]}"
-  p4=$(( ${p3:-$p2}+1 ))
+  p4=$next_part
+  sgdisk --new="$p4:0:0" --typecode="$p4:8300" \
+         --change-name="$p4:Linux root" "${STATE[disk]}"
 
   partprobe "${STATE[disk]}" 2>/dev/null || sleep 2
 
